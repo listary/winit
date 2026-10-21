@@ -2452,8 +2452,11 @@ unsafe fn public_window_callback_inner(
                 });
                 result = ProcResult::Value(0);
             } else if msg == TASKBAR_CREATED.get() {
-                let window_state = userdata.window_state_lock();
-                unsafe { set_skip_taskbar(window, window_state.skip_taskbar) };
+                // LISTARY PATCH (taskbar-created-deadlock): backport of rust-windowing/winit#4563.
+                // `set_skip_taskbar` waits on Explorer and handles sent messages meanwhile; one of
+                // them can re-enter this window's procedure and take the same lock.
+                let skip_taskbar = userdata.window_state_lock().skip_taskbar;
+                unsafe { set_skip_taskbar(window, skip_taskbar) };
                 result = ProcResult::DefWindowProc(wparam);
             } else {
                 result = ProcResult::DefWindowProc(wparam);
