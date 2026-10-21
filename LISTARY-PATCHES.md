@@ -16,9 +16,15 @@ Slint 1.18 的 winit 后端、`accesskit_winit`、`glutin-winit` 都依赖 winit
 
 这处补丁只消掉这一条路径。winit 窗口过程里还有别处拿着锁调 Win32 接口（抓鼠标、光标裁剪、尺寸查询），没有发现第二处会跨进程等任务栏的，这里没有改动。
 
+### dpi 从 crates.io 取（dpi-from-registry）
+
+[Cargo.toml](Cargo.toml) 里 `dpi` 依赖去掉了 `path = "dpi"`，只留版本要求 `0.1.1`，带 `LISTARY PATCH` 注释。crates.io 发布包的清单本来就没有这个路径，所以这样解析出的依赖和用 crates.io 的 winit 0.30.13 时相同（现在是 dpi 0.1.2）。
+
+不改的话，从 git 取 winit 会顺带用仓库里的 dpi 0.1.1，和别的包（如 muda）从 crates.io 取的 dpi 并存两份，两边的 dpi 类型对不上。只动了清单，没有动源码。
+
 ## 升级或撤除时核对
 
 1. 上游 0.30 线发了带 #4563 的版本，或 Slint 换到已带修复的 winit 时，Listary 改回 registry 版本，删掉 `[patch.crates-io]` 里的 winit 一行。还要保留时，从新版本的标签拉新分支，把本分支的补丁提交搬过去。
 2. 新版本里找 `TASKBAR_CREATED` 的分支，确认调 `set_skip_taskbar` 时不再持有 `window_state_lock()`。
-3. 在 `app/` 执行 `cargo tree -p listary --edges normal,build --locked -i winit`，确认只有一份 winit，来源是本分支。`app/crates/listary-ui/tests/slint_discipline.rs` 也按锁文件检查 winit 的来源。
+3. 在 `app/` 执行 `cargo tree -p listary --edges normal,build --locked -i winit` 和 `-i dpi`，确认 winit 和 dpi 各只有一份，winit 来源是本分支、dpi 来自 crates.io。`app/crates/listary-ui/tests/slint_discipline.rs` 也按锁文件检查 winit 的来源。
 4. 补丁只改函数体，丢失后不会有编译错误。行为验证在虚拟机上做：开着欢迎窗口和文件搜索窗口，主屏缩放 100% 和 150% 来回改多次，再重启一次 Explorer，Listary 不应卡死。
