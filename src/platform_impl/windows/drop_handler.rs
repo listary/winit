@@ -5,7 +5,9 @@ use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use windows_sys::core::{IUnknown, GUID, HRESULT};
-use windows_sys::Win32::Foundation::{DV_E_FORMATETC, HWND, POINTL, S_OK};
+use windows_sys::Win32::Foundation::{
+    DV_E_FORMATETC, E_NOINTERFACE, E_POINTER, HWND, POINTL, S_OK,
+};
 use windows_sys::Win32::System::Com::{IDataObject, DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL};
 use windows_sys::Win32::System::Ole::{CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_NONE};
 use windows_sys::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
@@ -19,6 +21,14 @@ use crate::platform_impl::platform::WindowId;
 
 use crate::event::Event;
 use crate::window::WindowId as RootWindowId;
+
+// LISTARY PATCH (drop-target-query-interface): the interfaces `QueryInterface` answers for.
+const IID_IUNKNOWN: GUID = GUID::from_u128(0x00000000_0000_0000_c000_000000000046);
+const IID_IDROPTARGET: GUID = GUID::from_u128(0x00000122_0000_0000_c000_000000000046);
+
+fn same_guid(a: &GUID, b: &GUID) -> bool {
+    a.data1 == b.data1 && a.data2 == b.data2 && a.data3 == b.data3 && a.data4 == b.data4
+}
 
 #[repr(C)]
 pub struct FileDropHandlerData {
@@ -51,13 +61,28 @@ impl FileDropHandler {
 
     // Implement IUnknown
     pub unsafe extern "system" fn QueryInterface(
-        _this: *mut IUnknown,
-        _riid: *const GUID,
-        _ppvObject: *mut *mut c_void,
+        this: *mut IUnknown,
+        riid: *const GUID,
+        ppvObject: *mut *mut c_void,
     ) -> HRESULT {
-        // This function doesn't appear to be required for an `IDropTarget`.
-        // An implementation would be nice however.
-        unimplemented!();
+        // LISTARY PATCH (drop-target-query-interface): was `unimplemented!()`. Third-party
+        // modules that hook OLE call this on the pointer given to `RegisterDragDrop`, and a
+        // panic cannot unwind out of `extern "system"`, so the process aborted.
+        if ppvObject.is_null() {
+            return E_POINTER;
+        }
+        unsafe { *ppvObject = ptr::null_mut() };
+        if riid.is_null() {
+            return E_POINTER;
+        }
+        let riid = unsafe { &*riid };
+        if same_guid(riid, &IID_IUNKNOWN) || same_guid(riid, &IID_IDROPTARGET) {
+            unsafe { Self::AddRef(this) };
+            unsafe { *ppvObject = this as *mut c_void };
+            S_OK
+        } else {
+            E_NOINTERFACE
+        }
     }
 
     pub unsafe extern "system" fn AddRef(this: *mut IUnknown) -> u32 {
@@ -235,3 +260,69 @@ static DROP_TARGET_VTBL: IDropTargetVtbl = IDropTargetVtbl {
     DragLeave: FileDropHandler::DragLeave,
     Drop: FileDropHandler::Drop,
 };
+
+// LISTARY PATCH (drop-target-query-interface): calls `QueryInterface` through the vtable, as an
+// OLE hook does. Without the patch the first call aborts the test process.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn handler() -> FileDropHandler {
+        FileDropHandler::new(0, Box::new(|_| {}))
+    }
+
+    fn unknown(handler: &FileDropHandler) -> *mut IUnknown {
+        handler.data as *mut IUnknown
+    }
+
+    fn refcount(handler: &FileDropHandler) -> usize {
+        unsafe { (*handler.data).refcount.load(Ordering::Acquire) }
+    }
+
+    unsafe fn query(this: *mut IUnknown, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
+        let vtbl = unsafe { &*(*(this as *mut IDropTarget)).lpVtbl };
+        unsafe { (vtbl.parent.QueryInterface)(this, riid, ppv) }
+    }
+
+    unsafe fn release(this: *mut c_void) -> u32 {
+        let vtbl = unsafe { &*(*(this as *mut IDropTarget)).lpVtbl };
+        unsafe { (vtbl.parent.Release)(this as *mut IUnknown) }
+    }
+
+    #[test]
+    fn iunknown_and_idroptarget_give_the_same_pointer() {
+        let handler = handler();
+        let this = unknown(&handler);
+        let mut as_unknown = ptr::null_mut();
+        let mut as_drop_target = ptr::null_mut();
+        assert_eq!(unsafe { query(this, &IID_IUNKNOWN, &mut as_unknown) }, S_OK);
+        assert_eq!(unsafe { query(this, &IID_IDROPTARGET, &mut as_drop_target) }, S_OK);
+        assert_eq!(as_unknown, this as *mut c_void);
+        assert_eq!(as_drop_target, this as *mut c_void);
+        assert_eq!(refcount(&handler), 3);
+        assert_eq!(unsafe { release(as_unknown) }, 2);
+        assert_eq!(unsafe { release(as_drop_target) }, 1);
+    }
+
+    #[test]
+    fn other_interfaces_are_refused_and_the_output_cleared() {
+        // IDataObject: a real interface the drop target does not implement.
+        let iid_idataobject = GUID::from_u128(0x0000010e_0000_0000_c000_000000000046);
+        let handler = handler();
+        let mut out = 1usize as *mut c_void;
+        assert_eq!(unsafe { query(unknown(&handler), &iid_idataobject, &mut out) }, E_NOINTERFACE);
+        assert!(out.is_null());
+        assert_eq!(refcount(&handler), 1);
+    }
+
+    #[test]
+    fn null_pointers_get_e_pointer() {
+        let handler = handler();
+        let this = unknown(&handler);
+        assert_eq!(unsafe { query(this, &IID_IUNKNOWN, ptr::null_mut()) }, E_POINTER);
+        let mut out = 1usize as *mut c_void;
+        assert_eq!(unsafe { query(this, ptr::null(), &mut out) }, E_POINTER);
+        assert!(out.is_null());
+        assert_eq!(refcount(&handler), 1);
+    }
+}
