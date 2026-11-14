@@ -317,7 +317,8 @@ impl KeyEventBuilder {
         let mut key_events = Vec::new();
 
         let mut layouts = LAYOUT_CACHE.lock().unwrap();
-        let (locale_id, _) = layouts.get_current_layout();
+        let (locale_id, layout) = layouts.get_current_layout();
+        let has_alt_graph = layout.has_alt_graph;
 
         macro_rules! is_key_pressed {
             ($vk:expr) => {
@@ -380,7 +381,8 @@ impl KeyEventBuilder {
             const CLEAR_MODIFIER_VKS: [VIRTUAL_KEY; 6] =
                 [VK_LCONTROL, VK_LSHIFT, VK_LMENU, VK_RCONTROL, VK_RSHIFT, VK_RMENU];
             for vk in CLEAR_MODIFIER_VKS.iter() {
-                if is_key_pressed!(*vk) {
+                // LISTARY PATCH (altgr-fake-ctrl-on-focus): leave out AltGr's fake left Ctrl.
+                if is_key_pressed!(*vk) && !is_alt_graph_fake_ctrl(*vk, kbd_state, has_alt_graph) {
                     let event = Self::create_synthetic(
                         *vk,
                         key_state,
@@ -719,6 +721,19 @@ fn is_current_fake(curr_info: &PartialKeyEventInfo, next_msg: MSG, layout: &Layo
         }
     }
     false
+}
+
+// LISTARY PATCH (altgr-fake-ctrl-on-focus): whether a held modifier is the left Ctrl the system
+// presses on its own while AltGr is held, which the focus synthesis must leave out.
+//
+// The keyboard state cannot tell that Ctrl from a real one, so it is judged the way
+// `is_current_fake` and `get_agnostic_mods` judge it: a layout with AltGr and the right Alt
+// down. Key messages drop the fake Ctrl's press and release (`is_current_fake`), so
+// synthesizing its press when a window gains focus with AltGr held reported a Ctrl that is
+// never released, and every later key carried Ctrl. A real left Ctrl held together with AltGr
+// is left out as well; its release then arrives without a press, which receivers ignore.
+fn is_alt_graph_fake_ctrl(vk: VIRTUAL_KEY, kbd_state: &[u8; 256], has_alt_graph: bool) -> bool {
+    vk == VK_LCONTROL && has_alt_graph && kbd_state[VK_RMENU as usize] & 0x80 != 0
 }
 
 enum PendingMessage<T> {
@@ -1240,4 +1255,34 @@ pub(crate) fn scancode_to_physicalkey(scancode: u32) -> PhysicalKey {
         0xe030 => KeyCode::AudioVolumeUp,
         _ => return PhysicalKey::Unidentified(NativeKeyCode::Windows(scancode as u16)),
     })
+}
+
+// LISTARY PATCH (altgr-fake-ctrl-on-focus): which held modifiers the focus synthesis leaves out.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn held(keys: &[VIRTUAL_KEY]) -> [u8; 256] {
+        let mut state = [0u8; 256];
+        for &vk in keys {
+            state[vk as usize] = 0x80;
+        }
+        state
+    }
+
+    #[test]
+    fn altgr_held_on_a_layout_with_altgr_leaves_out_the_left_ctrl_only() {
+        let state = held(&[VK_LCONTROL, VK_RMENU]);
+        assert!(is_alt_graph_fake_ctrl(VK_LCONTROL, &state, true));
+        assert!(!is_alt_graph_fake_ctrl(VK_RMENU, &state, true));
+        assert!(!is_alt_graph_fake_ctrl(VK_RCONTROL, &held(&[VK_RCONTROL, VK_RMENU]), true));
+    }
+
+    #[test]
+    fn ctrl_is_kept_without_altgr() {
+        // Left Ctrl with left Alt: a real Ctrl+Alt.
+        assert!(!is_alt_graph_fake_ctrl(VK_LCONTROL, &held(&[VK_LCONTROL, VK_LMENU]), true));
+        // Right Alt on a layout without AltGr is a plain Alt, and the Ctrl is real.
+        assert!(!is_alt_graph_fake_ctrl(VK_LCONTROL, &held(&[VK_LCONTROL, VK_RMENU]), false));
+    }
 }

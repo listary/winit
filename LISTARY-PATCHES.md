@@ -32,9 +32,17 @@ Slint 1.18 的 winit 后端、`accesskit_winit`、`glutin-winit` 都依赖 winit
 
 不改的话，从 git 取 winit 会顺带用仓库里的 dpi 0.1.1，和别的包（如 muda）从 crates.io 取的 dpi 并存两份，两边的 dpi 类型对不上。只动了清单，没有动源码。
 
+### 拿焦点时不补报 AltGr 带出的假左 Ctrl（altgr-fake-ctrl-on-focus）
+
+[src/platform_impl/windows/keyboard.rs](src/platform_impl/windows/keyboard.rs) 的 `synthesize_kbd_state` 在窗口拿到或失去焦点时，把按着的修饰键补报成按键事件。现在当前布局有 AltGr、右 Alt 又按着时，不补报左 Ctrl（新函数 `is_alt_graph_fake_ctrl`）。带 `LISTARY PATCH` 注释。
+
+为什么要改：德语、法语这类带 AltGr 的布局，按住 AltGr 时系统自己按下一个假的左 Ctrl。winit 平时按 `is_current_fake` 把这个假 Ctrl 的按下和抬起都丢掉，但拿焦点时读的是键盘状态，分不出真假，就补报了一个左 Ctrl 按下；用户松开 AltGr 时，假 Ctrl 的抬起又被丢掉。Slint 的修饰键只靠按键事件维护，于是一直当 Ctrl 按着：用 AltGr+键 的全局热键叫出 Listary 后，打的每个字都带 Ctrl，搜索框打不进字，`c` 还被当成 Ctrl+C。判断真假的条件和 `is_current_fake`、`get_agnostic_mods` 相同：布局有 AltGr 且右 Alt 按着。真的同时按着左 Ctrl 和 AltGr 拿焦点时，补报会少一个 Ctrl，松开左 Ctrl 时收到一个没有按下的抬起，Slint 照常当作「没按 Ctrl」。
+
+上游 master 的 `synthesize_kbd_state` 也是这样补报（2026-11 查过），没有修。
+
 ## 升级或撤除时核对
 
 1. 上游 0.30 线发了带 #4563 和拖放修复的版本，或 Slint 换到已带这两处修复的 winit（0.31 起）时，Listary 改回 registry 版本，删掉 `[patch.crates-io]` 里的 winit 一行。还要保留时，从新版本的标签拉新分支，把本分支的补丁提交搬过去。
-2. 新版本里找 `TASKBAR_CREATED` 的分支，确认调 `set_skip_taskbar` 时不再持有 `window_state_lock()`；找拖放目标的 `QueryInterface`，确认不再是 `unimplemented!()`。
+2. 新版本里找 `TASKBAR_CREATED` 的分支，确认调 `set_skip_taskbar` 时不再持有 `window_state_lock()`；找拖放目标的 `QueryInterface`，确认不再是 `unimplemented!()`；找拿焦点时补报按键的地方（现在是 `synthesize_kbd_state`），确认右 Alt 按着时不补报 AltGr 的假左 Ctrl，没有就把这处补丁搬过去。
 3. 在 `app/` 执行 `cargo tree -p listary --edges normal,build --locked -i winit` 和 `-i dpi`，确认 winit 和 dpi 各只有一份，winit 来源是本分支、dpi 来自 crates.io。`app/crates/listary-ui/tests/slint_discipline.rs` 也按锁文件检查 winit 的来源。
-4. 拖放补丁在 Windows 上跑 `cargo test --lib drop_handler` 验证。任务栏补丁只改函数体，丢失后不会有编译错误。行为验证在虚拟机上做：开着欢迎窗口和文件搜索窗口，主屏缩放 100% 和 150% 来回改多次，再重启一次 Explorer，Listary 不应卡死。
+4. 拖放补丁在 Windows 上跑 `cargo test --lib drop_handler` 验证，AltGr 补丁跑 `cargo test --lib keyboard`（只测判断函数）。AltGr 的行为验证在虚拟机上做：加德语布局，把 Listary 热键设成 Ctrl+Alt+Ö，用 AltGr+Ö 叫出启动器后打 abc 要能进字。任务栏补丁只改函数体，丢失后不会有编译错误。行为验证在虚拟机上做：开着欢迎窗口和文件搜索窗口，主屏缩放 100% 和 150% 来回改多次，再重启一次 Explorer，Listary 不应卡死。
