@@ -36,7 +36,7 @@ Slint 1.18 的 winit 后端、`accesskit_winit`、`glutin-winit` 都依赖 winit
 
 [src/platform_impl/windows/keyboard.rs](src/platform_impl/windows/keyboard.rs) 的 `synthesize_kbd_state` 在窗口拿到或失去焦点时，把按着的修饰键补报成按键事件。现在当前布局有 AltGr、右 Alt 又按着时，不补报左 Ctrl（新函数 `is_alt_graph_fake_ctrl`）。带 `LISTARY PATCH` 注释。
 
-为什么要改：德语、法语这类带 AltGr 的布局，按住 AltGr 时系统自己按下一个假的左 Ctrl。winit 平时按 `is_current_fake` 把这个假 Ctrl 的按下和抬起都丢掉，但拿焦点时读的是键盘状态，分不出真假，就补报了一个左 Ctrl 按下；用户松开 AltGr 时，假 Ctrl 的抬起又被丢掉。Slint 的修饰键只靠按键事件维护，于是一直当 Ctrl 按着：用 AltGr+键 的全局热键叫出 Listary 后，打的每个字都带 Ctrl，搜索框打不进字，`c` 还被当成 Ctrl+C。判断真假的条件和 `is_current_fake`、`get_agnostic_mods` 相同：布局有 AltGr 且右 Alt 按着。真的同时按着左 Ctrl 和 AltGr 拿焦点时，补报会少一个 Ctrl，松开左 Ctrl 时收到一个没有按下的抬起，Slint 照常当作「没按 Ctrl」。
+为什么要改：德语、法语这类带 AltGr 的布局，按住 AltGr 时系统自己按下一个假的左 Ctrl。winit 平时按 `is_current_fake` 把这个假 Ctrl 的按下和抬起都丢掉，但拿焦点时读的是键盘状态，分不出真假，就补报了一个左 Ctrl 按下；用户松开 AltGr 时，假 Ctrl 的抬起又被丢掉。Slint 的修饰键只靠按键事件维护，于是一直当 Ctrl 按着：用 AltGr+键 的全局热键叫出 Listary 后，打的每个字都带 Ctrl，搜索框打不进字，`c` 还被当成 Ctrl+C。`is_current_fake` 靠「Ctrl 消息后面紧跟右 Alt 消息」认出假 Ctrl，拿焦点时没有后一条消息可看，所以按 `get_agnostic_mods` 的条件判断：布局有 AltGr 且右 Alt 按着。代价：真的同时按着左 Ctrl 和 AltGr 拿焦点时，补报会少一个 Ctrl；在用户重新按一次左 Ctrl 之前，即使先松开 AltGr、左 Ctrl 还按着，接收方也不当 Ctrl 按着；松开左 Ctrl 时收到一个没有按下的抬起，无害。
 
 上游 master 的 `synthesize_kbd_state` 也是这样补报（2026-11 查过），没有修。
 

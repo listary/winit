@@ -726,12 +726,14 @@ fn is_current_fake(curr_info: &PartialKeyEventInfo, next_msg: MSG, layout: &Layo
 // LISTARY PATCH (altgr-fake-ctrl-on-focus): whether a held modifier is the left Ctrl the system
 // presses on its own while AltGr is held, which the focus synthesis must leave out.
 //
-// The keyboard state cannot tell that Ctrl from a real one, so it is judged the way
-// `is_current_fake` and `get_agnostic_mods` judge it: a layout with AltGr and the right Alt
-// down. Key messages drop the fake Ctrl's press and release (`is_current_fake`), so
-// synthesizing its press when a window gains focus with AltGr held reported a Ctrl that is
-// never released, and every later key carried Ctrl. A real left Ctrl held together with AltGr
-// is left out as well; its release then arrives without a press, which receivers ignore.
+// Key messages drop the fake Ctrl's press and release (`is_current_fake`, which spots it as a
+// Ctrl message followed by a right Alt one), so synthesizing its press when a window gains
+// focus with AltGr held reported a Ctrl that is never released, and every later key carried
+// Ctrl. The keyboard state has no next message to look at and cannot tell that Ctrl from a real
+// one, so it is judged the way `get_agnostic_mods` judges it: a layout with AltGr and the right
+// Alt down. A real left Ctrl held together with AltGr is left out as well: until it is pressed
+// again, receivers do not see it held, also after AltGr is released, and its release arrives
+// without a press.
 fn is_alt_graph_fake_ctrl(vk: VIRTUAL_KEY, kbd_state: &[u8; 256], has_alt_graph: bool) -> bool {
     vk == VK_LCONTROL && has_alt_graph && kbd_state[VK_RMENU as usize] & 0x80 != 0
 }
